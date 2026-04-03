@@ -1,0 +1,45 @@
+spec_version: 1
+name: glucorl
+display_name: "GlucoRL — Insulin Dosing RL Environment"
+description: >
+  An OpenEnv environment for training RL agents to make personalized insulin
+  dosing decisions for Type 1 Diabetic patients. Agents observe continuous
+  glucose monitor readings and decide basal and bolus insulin delivery to
+  maintain blood glucose in the safe 70-180 mg/dL range across 3 tasks
+  of increasing difficulty.
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+tags:
+  - openenv
+  - healthcare
+  - reinforcement-learning
+  - glucose
+  - insulin
+tasks:
+  - id: task_1
+    name: Basal Rate Control
+    difficulty: easy
+    description: Single stable patient, no meals, optimize basal insulin rate
+  - id: task_2
+    name: Meal Bolus Timing
+    difficulty: medium
+    description: Manage glucose around 3 announced daily meals with bolus dosing
+  - id: task_3
+    name: Cross-Patient Generalisation
+    difficulty: hard
+    description: Adapt insulin policy to random unseen patients with unannounced meals
+action_space:
+  type: continuous
+  fields:
+    basal_rate: {type: float, min: 0.0, max: 5.0, unit: units/hr}
+    bolus_dose: {type: float, min: 0.0, max: 20.0, unit: units}
+observation_space:
+  fields:
+    glucose_mg_dl: {type: float, min: 20.0, max: 600.0}
+    glucose_trend: {type: string, enum: [rapidly_falling, falling, stable, rising, rapidly_rising]}
+    meal_announced: {type: bool}
+    meal_grams_announced: {type: float}
+    time_of_day_hours: {type: float, min: 0.0, max: 24.0}
+    step: {type: int, min: 0, max: 479}
