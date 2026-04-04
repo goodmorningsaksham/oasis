@@ -9,7 +9,7 @@ Required environment variables:
 Optional environment variables:
     API_BASE_URL   LLM API endpoint (default: https://router.huggingface.co/v1)
     MODEL_NAME     Model identifier (default: meta-llama/Llama-3.1-8B-Instruct)
-    GLUCORL_ENV_URL  Environment server URL (default: http://localhost:8000)
+    OASIS_ENV_URL  Environment server URL (default: http://localhost:8000)
 """
 
 import os
@@ -188,7 +188,7 @@ def run_task(client_openai: OpenAI, env_url: str, task_id: int):
 # ---------------------------------------------------------------------------
 
 def main():
-    env_url = os.getenv("GLUCORL_ENV_URL") or "http://localhost:8000"
+    env_url = (os.getenv("OASIS_ENV_URL") or "http://localhost:8000")
 
     client_openai = OpenAI(
         base_url=API_BASE_URL,
