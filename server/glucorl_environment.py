@@ -33,6 +33,16 @@ from server.constants import (
     GLUCOSE_SEVERE_HYPO,
     GLUCOSE_TARGET_LOW,
     GLUCOSE_TARGET_HIGH,
+    IOB_STEP_DECAY,
+    EXERCISE_INTENSITY_LEVELS,
+    EXERCISE_DURATION_STEPS,
+    EXERCISE_SENSITIVITY_MULTIPLIER,
+    EXERCISE_SCHEDULE_TASK2,
+    EXERCISE_ANNOUNCEMENT_STEPS,
+    ILLNESS_RESISTANCE_MIN,
+    ILLNESS_RESISTANCE_MAX,
+    ILLNESS_ONSET_STEP_MIN,
+    ILLNESS_ONSET_STEP_MAX,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,17 +58,23 @@ class GlucoRLEnvironment(Environment):
     Wraps simglucose to present a step-by-step decision problem where an
     agent observes CGM glucose readings and decides basal + bolus insulin
     delivery every 3 minutes over a simulated 24-hour day.
+
+    The agent observes noisy CGM readings (σ=10 mg/dL per ISO 15197).
+    Rewards and grader scores are computed on true subcutaneous glucose (Gsub).
     """
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = False
 
     def __init__(self):
         super().__init__()
-        self._patient_mgr = PatientManager()
+        self._patient_mgr = PatientManager(noise_enabled=True)
         self._task_id: int = 1
         self._step_count: int = 0
         self._done: bool = True
+        # True glucose history (Gsub) — used by graders, reward, TIR, state
         self._glucose_history: list[float] = []
+        # Noisy CGM glucose history — used by agent observation and trend
+        self._cgm_glucose_history: list[float] = []
         self._reward_history: list[float] = []
         self._action_history: list[tuple[float, float]] = []
         self._episode_reward: float = 0.0
@@ -68,6 +84,16 @@ class GlucoRLEnvironment(Environment):
         self._hypo_events: int = 0
         self._severe_hypo_events: int = 0
         self._hyper_events: int = 0
+        self._iob: float = 0.0  # Insulin-on-board in units
+        self._current_exercise_intensity: float = 0.0
+        self._exercise_steps_remaining: int = 0
+        self._exercise_schedule: dict[int, float] = {}  # {step: intensity}
+        self._exercise_duration_map: dict[int, int] = {}  # {step: duration_steps}
+        self._hypo_start_step: int | None = None   # Step when hypo began
+        self._hyper_start_step: int | None = None   # Step when hyper began
+        self._illness_resistance: float = 1.0       # Insulin resistance multiplier (1.0 = no illness)
+        self._illness_onset_step: int | None = None  # Step when illness begins
+        self._illness_active: bool = False
         logger.info("GlucoRLEnvironment initialised")
 
     # ------------------------------------------------------------------
@@ -101,6 +127,7 @@ class GlucoRLEnvironment(Environment):
         self._step_count = 0
         self._done = False
         self._glucose_history = []
+        self._cgm_glucose_history = []
         self._reward_history = []
         self._action_history = []
         self._episode_reward = 0.0
@@ -108,32 +135,68 @@ class GlucoRLEnvironment(Environment):
         self._hypo_events = 0
         self._severe_hypo_events = 0
         self._hyper_events = 0
+        self._iob = 0.0
+        self._current_exercise_intensity = 0.0
+        self._exercise_steps_remaining = 0
+        self._hypo_start_step = None
+        self._hyper_start_step = None
+        self._illness_resistance = 1.0
+        self._illness_onset_step = None
+        self._illness_active = False
 
-        # Select patient based on task
+        # Build exercise schedule based on task
+        if self._task_id == 1:
+            # Task 1: no exercise
+            self._exercise_schedule = {}
+            self._exercise_duration_map = {}
+        elif self._task_id == 2:
+            # Task 2: fixed schedule, announced
+            self._exercise_schedule = dict(EXERCISE_SCHEDULE_TASK2)
+            self._exercise_duration_map = {
+                step: 20 for step in EXERCISE_SCHEDULE_TASK2
+            }
+        else:
+            # Task 3 & 4: random exercise event (unannounced)
+            self._exercise_schedule = {}
+            self._exercise_duration_map = {}
+            if random.random() < 0.6:
+                ex_step = random.randint(60, 350)
+                ex_intensity = random.choice(EXERCISE_INTENSITY_LEVELS)
+                ex_duration = random.choice(EXERCISE_DURATION_STEPS)
+                self._exercise_schedule[ex_step] = ex_intensity
+                self._exercise_duration_map[ex_step] = ex_duration
+
+        # Task 4: generate illness (insulin resistance) parameters
+        if self._task_id == 4:
+            self._illness_resistance = random.uniform(
+                ILLNESS_RESISTANCE_MIN, ILLNESS_RESISTANCE_MAX
+            )
+            self._illness_onset_step = random.randint(
+                ILLNESS_ONSET_STEP_MIN, ILLNESS_ONSET_STEP_MAX
+            )
+
         if self._task_id in (1, 2):
             self._patient_name = DEFAULT_PATIENT
         else:
+            # Task 3 & 4: random patient
             self._patient_name = random.choice(ALL_PATIENT_NAMES)
 
-        # Reset patient simulator
-        initial_glucose = self._patient_mgr.reset(self._patient_name)
+        # Reset patient simulator — returns (cgm_glucose, true_glucose)
+        cgm_glucose, true_glucose = self._patient_mgr.reset(self._patient_name)
 
-        # Add small noise to initial glucose to prevent overfitting
-        noise = np.random.uniform(-20.0, 20.0)
-        # We cannot directly modify the patient's internal state easily,
-        # so we record the noised reading as the first observation.
-        # The actual simulator state stays at its natural init value.
-        self._glucose_history.append(initial_glucose)
+        self._glucose_history.append(true_glucose)
+        self._cgm_glucose_history.append(cgm_glucose)
 
         logger.info(
-            "Episode reset: task=%d patient=%s initial_glucose=%.1f episode=%s",
+            "Episode reset: task=%d patient=%s true_glucose=%.1f cgm=%.1f episode=%s",
             self._task_id,
             self._patient_name,
-            initial_glucose,
+            true_glucose,
+            cgm_glucose,
             self._episode_id,
         )
 
-        return self._build_observation(initial_glucose)
+        return self._build_observation(cgm_glucose, true_glucose)
 
     # ------------------------------------------------------------------
     # OpenEnv interface: step
@@ -151,9 +214,9 @@ class GlucoRLEnvironment(Environment):
         1. Convert GlucoAction to simglucose units
         2. Determine if a meal is happening this step
         3. Advance the patient simulator
-        4. Compute reward
-        5. Check termination conditions
-        6. Return observation
+        4. Compute reward (on TRUE glucose, not noisy CGM)
+        5. Check termination conditions (on TRUE glucose)
+        6. Return observation (agent sees noisy CGM glucose)
 
         Args:
             action: GlucoAction with basal_rate and bolus_dose.
@@ -163,9 +226,10 @@ class GlucoRLEnvironment(Environment):
             GlucoObservation with done=True/False and reward.
         """
         if self._done:
+            last_true = self._glucose_history[-1] if self._glucose_history else 140.0
+            last_cgm = self._cgm_glucose_history[-1] if self._cgm_glucose_history else 140.0
             return self._build_observation(
-                self._glucose_history[-1] if self._glucose_history else 140.0,
-                force_done=True,
+                last_cgm, last_true, force_done=True,
             )
 
         # Record action
@@ -173,55 +237,108 @@ class GlucoRLEnvironment(Environment):
         bolus = action.bolus_dose
         self._action_history.append((basal, bolus))
 
+        # Update insulin-on-board: add new bolus, then decay
+        self._iob = (self._iob + bolus) * IOB_STEP_DECAY
+        self._iob = max(0.0, round(self._iob, 4))
+
+        # Update exercise state
+        if self._step_count in self._exercise_schedule:
+            self._current_exercise_intensity = self._exercise_schedule[self._step_count]
+            self._exercise_steps_remaining = self._exercise_duration_map.get(
+                self._step_count, 20
+            )
+        if self._exercise_steps_remaining > 0:
+            self._exercise_steps_remaining -= 1
+            if self._exercise_steps_remaining <= 0:
+                self._current_exercise_intensity = 0.0
+
+        # Compute insulin sensitivity multiplier from exercise
+        sensitivity = EXERCISE_SENSITIVITY_MULTIPLIER.get(
+            self._current_exercise_intensity, 1.0
+        ) if self._current_exercise_intensity > 0 else 1.0
+
+        # Apply illness resistance (Task 4): reduces insulin effectiveness
+        if (self._task_id == 4
+                and self._illness_onset_step is not None
+                and self._step_count >= self._illness_onset_step):
+            self._illness_active = True
+            sensitivity *= (1.0 / self._illness_resistance)
+
         # Determine meal CHO for this step
         cho_grams = self._get_meal_cho(self._step_count)
 
-        # Advance simulator
+        # Advance simulator — returns (cgm_glucose, true_glucose)
         try:
-            glucose = self._patient_mgr.step(basal, bolus, cho_grams)
+            cgm_glucose, true_glucose = self._patient_mgr.step(
+                basal, bolus, cho_grams,
+                insulin_sensitivity_multiplier=sensitivity,
+            )
         except Exception as e:
             logger.error("Simulator step failed at step %d: %s", self._step_count, e)
-            glucose = self._glucose_history[-1] if self._glucose_history else 140.0
+            true_glucose = self._glucose_history[-1] if self._glucose_history else 140.0
+            cgm_glucose = true_glucose
             self._done = True
 
-        # Clamp extreme readings
-        if glucose < GLUCOSE_DEATH:
+        # Clamp extreme readings — check TRUE glucose for patient safety
+        if true_glucose < GLUCOSE_DEATH:
             logger.warning(
                 "Glucose %.1f < %.1f — patient death at step %d",
-                glucose, GLUCOSE_DEATH, self._step_count,
+                true_glucose, GLUCOSE_DEATH, self._step_count,
             )
-            glucose = GLUCOSE_DEATH
+            true_glucose = GLUCOSE_DEATH
+            cgm_glucose = GLUCOSE_DEATH
             self._done = True
 
-        self._glucose_history.append(glucose)
+        self._glucose_history.append(true_glucose)
+        self._cgm_glucose_history.append(cgm_glucose)
         self._step_count += 1
 
-        # Gather history values for reward calculation
-        prev_glucose = self._glucose_history[-2] if len(self._glucose_history) >= 2 else glucose
-        glucose_2_ago = self._glucose_history[-3] if len(self._glucose_history) >= 3 else prev_glucose
+        # Gather history values for reward — uses TRUE glucose
+        prev_true = self._glucose_history[-2] if len(self._glucose_history) >= 2 else true_glucose
+        true_2_ago = self._glucose_history[-3] if len(self._glucose_history) >= 3 else prev_true
         bolus_2_ago = self._action_history[-2][1] if len(self._action_history) >= 2 else 0.0
 
-        # Compute reward
+        # Compute recovery context for reward bonus
+        steps_since_hypo = None
+        if self._hypo_start_step is not None:
+            steps_since_hypo = self._step_count - self._hypo_start_step
+        steps_since_hyper = None
+        if self._hyper_start_step is not None:
+            steps_since_hyper = self._step_count - self._hyper_start_step
+
+        # Compute reward on TRUE glucose (not noisy CGM)
         reward = calculate_step_reward(
-            glucose=glucose,
-            prev_glucose=prev_glucose,
+            glucose=true_glucose,
+            prev_glucose=prev_true,
             bolus_given=bolus,
-            glucose_2_steps_ago=glucose_2_ago,
+            glucose_2_steps_ago=true_2_ago,
             bolus_2_steps_ago=bolus_2_ago,
+            steps_since_hypo_start=steps_since_hypo,
+            steps_since_hyper_start=steps_since_hyper,
         )
         self._reward_history.append(reward.step_total)
         self._episode_reward += reward.step_total
 
-        # Track clinical events
-        if glucose < GLUCOSE_TARGET_LOW:
+        # Track clinical events on TRUE glucose
+        if true_glucose < GLUCOSE_TARGET_LOW:
             self._hypo_events += 1
-        if glucose < GLUCOSE_SEVERE_HYPO:
+            if self._hypo_start_step is None:
+                self._hypo_start_step = self._step_count
+        else:
+            self._hypo_start_step = None
+
+        if true_glucose < GLUCOSE_SEVERE_HYPO:
             self._severe_hypo_events += 1
             self._consecutive_severe_hypo += 1
         else:
             self._consecutive_severe_hypo = 0
-        if glucose > GLUCOSE_TARGET_HIGH:
+
+        if true_glucose > GLUCOSE_TARGET_HIGH:
             self._hyper_events += 1
+            if self._hyper_start_step is None:
+                self._hyper_start_step = self._step_count
+        else:
+            self._hyper_start_step = None
 
         # Check termination
         if self._step_count >= STEPS_PER_EPISODE:
@@ -233,7 +350,9 @@ class GlucoRLEnvironment(Environment):
             )
             self._done = True
 
-        return self._build_observation(glucose, reward_value=reward.step_total)
+        return self._build_observation(
+            cgm_glucose, true_glucose, reward_value=reward.step_total,
+        )
 
     # ------------------------------------------------------------------
     # OpenEnv interface: state (property)
@@ -265,15 +384,17 @@ class GlucoRLEnvironment(Environment):
 
     def _build_observation(
         self,
-        glucose: float,
+        cgm_glucose: float,
+        true_glucose: float,
         reward_value: float | None = None,
         force_done: bool = False,
     ) -> GlucoObservation:
         """
         Build a GlucoObservation from current state.
 
-        Computes glucose trend from the last two readings and determines
-        meal announcement for Task 2.
+        The agent sees noisy CGM glucose. Trend is computed from CGM history
+        (matching real CGM device behaviour). true_glucose_mg_dl is always
+        provided for research and debugging.
         """
         done = force_done or self._done
         trend = self._compute_trend()
@@ -284,11 +405,16 @@ class GlucoRLEnvironment(Environment):
         if self._task_id == 2:
             meal_announced, meal_grams = self._check_meal_announcement(self._step_count)
 
+        # Exercise announcement (Task 2 only)
+        exercise_announced = False
+        if self._task_id == 2:
+            exercise_announced = self._check_exercise_announcement(self._step_count)
+
         # Time of day in hours
         time_hours = (self._step_count * STEP_DURATION_MIN) / 60.0
 
-        # Patient ID: hidden in Task 3 to force generalisation
-        patient_id = self._patient_name if self._task_id != 3 else None
+        # Patient ID: hidden in Task 3 & 4 to force generalisation
+        patient_id = self._patient_name if self._task_id in (1, 2) else None
 
         # Last action
         if self._action_history:
@@ -296,8 +422,12 @@ class GlucoRLEnvironment(Environment):
         else:
             last_basal, last_bolus = 1.0, 0.0
 
+        # Glucose history window: last 12 CGM readings (36 min of context)
+        window = self._cgm_glucose_history[-12:] if self._cgm_glucose_history else []
+        window = [round(g, 1) for g in window]
+
         return GlucoObservation(
-            glucose_mg_dl=round(glucose, 2),
+            glucose_mg_dl=round(cgm_glucose, 2),
             glucose_trend=trend,
             meal_announced=meal_announced,
             meal_grams_announced=meal_grams,
@@ -306,23 +436,30 @@ class GlucoRLEnvironment(Environment):
             patient_id=patient_id,
             last_action_basal=round(last_basal, 4),
             last_action_bolus=round(last_bolus, 4),
+            true_glucose_mg_dl=round(true_glucose, 2),
+            insulin_on_board_units=self._iob,
+            exercise_intensity=self._current_exercise_intensity,
+            exercise_announced=exercise_announced,
+            glucose_history_window=window,
+            illness_active=False,  # Never exposed to agent — debug only
             done=done,
             reward=reward_value,
         )
 
     def _compute_trend(self) -> str:
         """
-        Compute glucose trend arrow from the last two readings.
+        Compute glucose trend arrow from the last two CGM readings.
 
+        Uses noisy CGM history (matching real CGM device behaviour).
         Rate of change is per minute (reading delta / STEP_DURATION_MIN).
 
         Returns one of: rapidly_falling, falling, stable, rising, rapidly_rising
         """
-        if len(self._glucose_history) < 2:
+        if len(self._cgm_glucose_history) < 2:
             return "stable"
 
-        current = self._glucose_history[-1]
-        previous = self._glucose_history[-2]
+        current = self._cgm_glucose_history[-1]
+        previous = self._cgm_glucose_history[-2]
         rate = (current - previous) / STEP_DURATION_MIN  # mg/dL per minute
 
         if rate > 2.0:
@@ -363,14 +500,30 @@ class GlucoRLEnvironment(Environment):
                 return True, cho
         return False, 0.0
 
+    def _check_exercise_announcement(self, current_step: int) -> bool:
+        """
+        Check if an exercise event should be announced to the agent.
+
+        Exercise is announced EXERCISE_ANNOUNCEMENT_STEPS (10 steps = 30 min)
+        in advance. Only used in Task 2.
+
+        Returns:
+            True if exercise is upcoming within the announcement window.
+        """
+        for ex_step in self._exercise_schedule:
+            steps_until = ex_step - current_step
+            if 0 < steps_until <= EXERCISE_ANNOUNCEMENT_STEPS:
+                return True
+        return False
+
     def _compute_tir(self) -> float:
         """
-        Compute Time-in-Range: fraction of glucose readings in [70, 180] mg/dL.
+        Compute Time-in-Range: fraction of TRUE glucose readings in [70, 180] mg/dL.
 
+        Uses true glucose (not noisy CGM) for accurate clinical assessment.
         Excludes the initial reading (index 0) since it's before any agent action.
         Returns 0.0 if no action steps have been taken yet.
         """
-        # Only count readings from step 1 onward (after agent actions)
         readings = self._glucose_history[1:] if len(self._glucose_history) > 1 else []
         if not readings:
             return 0.0

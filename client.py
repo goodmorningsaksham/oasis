@@ -75,6 +75,12 @@ class GlucoEnv(EnvClient[GlucoAction, GlucoObservation, GlucoState]):
             patient_id=obs_data.get("patient_id"),
             last_action_basal=obs_data.get("last_action_basal", 1.0),
             last_action_bolus=obs_data.get("last_action_bolus", 0.0),
+            true_glucose_mg_dl=obs_data.get("true_glucose_mg_dl"),
+            insulin_on_board_units=obs_data.get("insulin_on_board_units", 0.0),
+            exercise_intensity=obs_data.get("exercise_intensity", 0.0),
+            exercise_announced=obs_data.get("exercise_announced", False),
+            glucose_history_window=obs_data.get("glucose_history_window", []),
+            illness_active=obs_data.get("illness_active", False),
             done=done,
             reward=reward_raw,
         )

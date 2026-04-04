@@ -156,3 +156,84 @@ class TestRewardNonBinary:
             rewards.add(r.step_total)
 
         assert len(rewards) == 5, "Reward should produce 5 distinct values across zones"
+
+
+class TestRecoveryBonus:
+    """Recovery bonus rewards active correction of out-of-range excursions."""
+
+    def test_hypo_recovery_within_window(self):
+        """Crossing from hypo back to in-range within 10 steps → +0.5 bonus."""
+        r = calculate_step_reward(
+            glucose=75.0,           # now back in range
+            prev_glucose=65.0,      # was hypo last step
+            bolus_given=0.0,
+            glucose_2_steps_ago=60.0,
+            bolus_2_steps_ago=0.0,
+            steps_since_hypo_start=5,   # started 5 steps ago
+        )
+        assert r.recovery_bonus == 0.5
+        # Total: +1.0 (in range) + 0.5 (recovery) = 1.5
+        assert r.step_total == 1.5
+
+    def test_hypo_recovery_outside_window(self):
+        """Crossing from hypo back to in-range after 10+ steps → no bonus."""
+        r = calculate_step_reward(
+            glucose=75.0,
+            prev_glucose=65.0,
+            bolus_given=0.0,
+            glucose_2_steps_ago=60.0,
+            bolus_2_steps_ago=0.0,
+            steps_since_hypo_start=15,  # too slow
+        )
+        assert r.recovery_bonus == 0.0
+        assert r.step_total == 1.0  # just the TIR contribution
+
+    def test_hyper_recovery_within_window(self):
+        """Crossing from hyper back to in-range within 10 steps → +0.3 bonus."""
+        r = calculate_step_reward(
+            glucose=175.0,          # now back in range
+            prev_glucose=185.0,     # was hyper last step
+            bolus_given=0.0,
+            glucose_2_steps_ago=200.0,
+            bolus_2_steps_ago=0.0,
+            steps_since_hyper_start=8,
+        )
+        assert r.recovery_bonus == 0.3
+        assert abs(r.step_total - 1.3) < 1e-9
+
+    def test_no_bonus_when_stable_in_range(self):
+        """No recovery bonus when glucose stays in range throughout."""
+        r = calculate_step_reward(
+            glucose=120.0,
+            prev_glucose=125.0,
+            bolus_given=0.0,
+            glucose_2_steps_ago=130.0,
+            bolus_2_steps_ago=0.0,
+            steps_since_hypo_start=None,
+            steps_since_hyper_start=None,
+        )
+        assert r.recovery_bonus == 0.0
+        assert r.step_total == 1.0
+
+    def test_no_bonus_still_hypo(self):
+        """No bonus if glucose is still below 70 (hasn't recovered yet)."""
+        r = calculate_step_reward(
+            glucose=60.0,           # still hypo
+            prev_glucose=55.0,
+            bolus_given=0.0,
+            glucose_2_steps_ago=50.0,
+            bolus_2_steps_ago=0.0,
+            steps_since_hypo_start=3,
+        )
+        assert r.recovery_bonus == 0.0
+
+    def test_no_bonus_without_tracking(self):
+        """No bonus when steps_since params are None (backward compat)."""
+        r = calculate_step_reward(
+            glucose=75.0,
+            prev_glucose=65.0,
+            bolus_given=0.0,
+            glucose_2_steps_ago=60.0,
+            bolus_2_steps_ago=0.0,
+        )
+        assert r.recovery_bonus == 0.0

@@ -30,6 +30,10 @@ tasks:
     name: Cross-Patient Generalisation
     difficulty: hard
     description: Adapt insulin policy to random unseen patients with unannounced meals
+  - id: task_4
+    name: Sick Day Management
+    difficulty: expert
+    description: Unknown insulin resistance from simulated illness. Agent must detect and adapt without being told.
 action_space:
   type: continuous
   fields:

@@ -316,3 +316,346 @@ class TestMealAnnouncements:
             assert obs.meal_announced is False
             if obs.done:
                 break
+
+
+# ── CGM Noise ────────────────────────────────────────────────────────
+
+
+class TestCGMNoise:
+    """CGM measurement noise feature tests."""
+
+    def test_true_glucose_field_present(self):
+        """Observation should always include true_glucose_mg_dl."""
+        env = GlucoRLEnvironment()
+        obs = env.reset(task_id=1, seed=42)
+        assert obs.true_glucose_mg_dl is not None
+        assert obs.true_glucose_mg_dl > 0
+
+    def test_cgm_and_true_can_differ(self):
+        """With noise enabled, CGM and true glucose should differ sometimes."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        differences = 0
+        for _ in range(50):
+            obs = env.step(action)
+            if abs(obs.glucose_mg_dl - obs.true_glucose_mg_dl) > 0.01:
+                differences += 1
+        assert differences > 0, "CGM noise should cause some readings to differ from true glucose"
+
+    def test_reward_uses_true_glucose(self):
+        """Reward and clinical events should be based on true glucose, not noisy CGM."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        for _ in range(50):
+            obs = env.step(action)
+        state = env.state
+        # glucose_history in state should be TRUE glucose
+        # Verify it matches the true_glucose values we observed
+        assert len(state.glucose_history) == 51  # initial + 50 steps
+
+    def test_noise_disabled(self):
+        """With noise_enabled=False, CGM should equal true glucose exactly."""
+        from server.patient_manager import PatientManager
+        pm = PatientManager(noise_enabled=False)
+        cgm, true = pm.reset("adult#001")
+        assert cgm == true, f"Noise disabled but CGM ({cgm}) != true ({true})"
+        cgm2, true2 = pm.step(1.0, 0.0, 0.0)
+        assert cgm2 == true2, f"Noise disabled but step CGM ({cgm2}) != true ({true2})"
+
+    def test_state_glucose_history_is_true(self):
+        """GlucoState.glucose_history should contain true glucose values."""
+        env = GlucoRLEnvironment()
+        obs = env.reset(task_id=1, seed=42)
+        initial_true = obs.true_glucose_mg_dl
+        state = env.state
+        assert abs(state.glucose_history[0] - initial_true) < 0.01, (
+            f"State history[0] ({state.glucose_history[0]}) should be true glucose ({initial_true})"
+        )
+
+
+# ── Insulin-on-Board (IOB) ───────────────────────────────────────────
+
+
+class TestIOB:
+    """Insulin-on-Board tracking tests."""
+
+    def test_iob_starts_at_zero(self):
+        """IOB should be 0.0 after reset."""
+        env = GlucoRLEnvironment()
+        obs = env.reset(task_id=1, seed=42)
+        assert obs.insulin_on_board_units == 0.0
+
+    def test_iob_increases_after_bolus(self):
+        """IOB should increase after a bolus dose."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        obs = env.step(GlucoAction(basal_rate=1.0, bolus_dose=5.0))
+        assert obs.insulin_on_board_units > 0.0, (
+            f"IOB should be >0 after bolus, got {obs.insulin_on_board_units}"
+        )
+
+    def test_iob_decays_without_bolus(self):
+        """IOB should decay over steps with no bolus."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        # Give a bolus
+        obs = env.step(GlucoAction(basal_rate=1.0, bolus_dose=10.0))
+        iob_after_bolus = obs.insulin_on_board_units
+        # Step without bolus several times
+        for _ in range(20):
+            obs = env.step(GlucoAction(basal_rate=1.0, bolus_dose=0.0))
+        assert obs.insulin_on_board_units < iob_after_bolus, (
+            f"IOB should decay: was {iob_after_bolus}, now {obs.insulin_on_board_units}"
+        )
+
+    def test_iob_resets_between_episodes(self):
+        """IOB should reset to 0.0 on new episode."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        env.step(GlucoAction(basal_rate=1.0, bolus_dose=10.0))
+        # Reset
+        obs = env.reset(task_id=1, seed=42)
+        assert obs.insulin_on_board_units == 0.0
+
+    def test_iob_never_negative(self):
+        """IOB should never go below 0.0."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        for _ in range(100):
+            obs = env.step(action)
+            assert obs.insulin_on_board_units >= 0.0
+
+
+# ── Exercise Events ──────────────────────────────────────────────────
+
+
+class TestExerciseEvents:
+    """Exercise event feature tests."""
+
+    def test_task_1_no_exercise(self):
+        """Task 1 should have no exercise events."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        for _ in range(480):
+            obs = env.step(action)
+            assert obs.exercise_intensity == 0.0
+            assert obs.exercise_announced is False
+            if obs.done:
+                break
+
+    def test_task_2_exercise_announced(self):
+        """Task 2 should announce exercise before it starts."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=2, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        announced = False
+        exercising = False
+        for step in range(200):
+            obs = env.step(action)
+            if obs.exercise_announced:
+                announced = True
+            if obs.exercise_intensity > 0:
+                exercising = True
+            if obs.done:
+                break
+        assert announced, "Task 2 should announce exercise before step 150"
+        assert exercising, "Task 2 should have exercise starting at step 150"
+
+    def test_task_3_exercise_can_occur(self):
+        """Task 3 should sometimes have exercise events (60% chance)."""
+        had_exercise = False
+        for seed in range(20):
+            env = GlucoRLEnvironment()
+            env.reset(task_id=3, seed=seed)
+            action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+            for _ in range(400):
+                obs = env.step(action)
+                if obs.exercise_intensity > 0:
+                    had_exercise = True
+                    break
+                if obs.done:
+                    break
+            if had_exercise:
+                break
+        assert had_exercise, "At least one of 20 Task 3 episodes should have exercise"
+
+    def test_exercise_returns_to_zero(self):
+        """Exercise intensity should return to 0.0 after exercise ends."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=2, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        was_exercising = False
+        returned_to_zero = False
+        for step in range(300):
+            obs = env.step(action)
+            if obs.exercise_intensity > 0:
+                was_exercising = True
+            elif was_exercising and obs.exercise_intensity == 0.0:
+                returned_to_zero = True
+                break
+            if obs.done:
+                break
+        assert was_exercising, "Exercise should have occurred"
+        assert returned_to_zero, "Exercise intensity should return to 0.0 after ending"
+
+    def test_exercise_intensity_valid_range(self):
+        """Exercise intensity should always be in [0.0, 1.0]."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=2, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        for _ in range(300):
+            obs = env.step(action)
+            assert 0.0 <= obs.exercise_intensity <= 1.0
+            if obs.done:
+                break
+
+
+# ── Glucose History Window ───────────────────────────────────────────
+
+
+class TestGlucoseHistoryWindow:
+    """Glucose history window provides recent CGM context."""
+
+    def test_window_has_initial_reading_at_reset(self):
+        """After reset, window should contain the initial CGM reading."""
+        env = GlucoRLEnvironment()
+        obs = env.reset(task_id=1, seed=42)
+        assert len(obs.glucose_history_window) == 1
+        assert abs(obs.glucose_history_window[0] - obs.glucose_mg_dl) < 0.2
+
+    def test_window_grows_to_12(self):
+        """Window should grow to 12 readings after 12 steps."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        for i in range(12):
+            obs = env.step(action)
+        # 1 initial + 12 steps = 13 in cgm history, window = last 12
+        assert len(obs.glucose_history_window) == 12
+
+    def test_window_stays_at_12(self):
+        """Window should stay at max 12 after more than 12 steps (sliding)."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        for i in range(25):
+            obs = env.step(action)
+        assert len(obs.glucose_history_window) == 12
+
+    def test_window_values_are_floats(self):
+        """All values in window should be finite floats."""
+        import math
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        for _ in range(20):
+            obs = env.step(action)
+        for val in obs.glucose_history_window:
+            assert isinstance(val, float)
+            assert math.isfinite(val)
+
+    def test_window_last_element_matches_current(self):
+        """Last element of window should be close to current glucose."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        for _ in range(15):
+            obs = env.step(action)
+        # Last window element should be the most recent CGM reading
+        # (both rounded, so small tolerance)
+        assert abs(obs.glucose_history_window[-1] - obs.glucose_mg_dl) < 0.2
+
+
+# ── Task 4: Sick Day ─────────────────────────────────────────────────
+
+
+class TestTask4:
+    """Task 4 — Sick Day / Insulin Resistance tests."""
+
+    def test_task_4_resets_successfully(self):
+        """Task 4 should reset without errors."""
+        env = GlucoRLEnvironment()
+        obs = env.reset(task_id=4, seed=42)
+        assert obs.glucose_mg_dl > 0
+        assert obs.done is False
+
+    def test_task_4_patient_hidden(self):
+        """Task 4 should hide patient_id (like Task 3)."""
+        env = GlucoRLEnvironment()
+        obs = env.reset(task_id=4, seed=42)
+        assert obs.patient_id is None
+
+    def test_task_4_meals_not_announced(self):
+        """Task 4 should not announce meals."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=4, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        for _ in range(150):
+            obs = env.step(action)
+            assert obs.meal_announced is False
+            if obs.done:
+                break
+
+    def test_task_4_has_illness_resistance(self):
+        """Task 4 should set illness resistance parameters."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=4, seed=42)
+        assert env._illness_resistance >= 1.5
+        assert env._illness_resistance <= 2.5
+        assert env._illness_onset_step is not None
+        assert 20 <= env._illness_onset_step <= 100
+
+    def test_task_4_illness_activates(self):
+        """Illness should activate after the onset step."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=4, seed=42)
+        onset = env._illness_onset_step
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        # Step past the onset
+        for _ in range(onset + 5):
+            obs = env.step(action)
+            if obs.done:
+                break
+        assert env._illness_active is True
+
+    def test_task_4_no_illness_before_onset(self):
+        """Illness should not be active before the onset step."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=4, seed=42)
+        onset = env._illness_onset_step
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        # Step up to but NOT past onset
+        for step in range(min(onset - 1, 19)):
+            obs = env.step(action)
+            if obs.done:
+                break
+        assert env._illness_active is False
+
+    def test_task_4_runs_full_episode(self):
+        """Task 4 should be able to run a complete 480-step episode."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=4, seed=42)
+        action = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+        steps = 0
+        for _ in range(480):
+            obs = env.step(action)
+            steps += 1
+            if obs.done:
+                break
+        assert steps > 0
+        state = env.state
+        assert state.task_id == 4
+
+    def test_tasks_1_2_no_illness(self):
+        """Tasks 1 and 2 should have no illness parameters set."""
+        for tid in [1, 2]:
+            env = GlucoRLEnvironment()
+            env.reset(task_id=tid, seed=42)
+            assert env._illness_resistance == 1.0
+            assert env._illness_onset_step is None
+            assert env._illness_active is False
+

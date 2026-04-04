@@ -71,6 +71,39 @@ class GlucoObservation(Observation):
         default=0.0,
         description="Bolus dose from previous step",
     )
+    true_glucose_mg_dl: Optional[float] = Field(
+        default=None,
+        description="True blood glucose (Gsub) before CGM noise. "
+                    "None in production mode — exposed for research/debugging only.",
+    )
+    insulin_on_board_units: float = Field(
+        default=0.0,
+        description="Active insulin remaining from recent boluses in units. "
+                    "Computed using exponential decay pharmacokinetic model. "
+                    "Commercial pumps display this to prevent bolus stacking.",
+    )
+    exercise_intensity: float = Field(
+        default=0.0,
+        ge=0.0, le=1.0,
+        description="Current exercise intensity (0.0=rest, 1.0=maximum). "
+                    "Increases insulin sensitivity by 20-70%. "
+                    "Announced in Task 2, unannounced in Task 3.",
+    )
+    exercise_announced: bool = Field(
+        default=False,
+        description="True if exercise is starting within 30 minutes (Task 2 only).",
+    )
+    glucose_history_window: list[float] = Field(
+        default_factory=list,
+        description="Last 12 CGM readings (36 minutes of history). "
+                    "Empty list before 12 steps have elapsed. "
+                    "Enables temporal reasoning without requiring RNN agents.",
+    )
+    illness_active: bool = Field(
+        default=False,
+        description="Whether illness/insulin resistance is currently active. "
+                    "Always False in Task 4 normal mode — exposed only for debugging.",
+    )
 
 
 class GlucoReward(BaseModel):
@@ -90,6 +123,11 @@ class GlucoReward(BaseModel):
         default=0.0,
         description="Penalty of -3.0 if glucose crashes below 54 within 2 steps of a bolus",
     )
+    recovery_bonus: float = Field(
+        default=0.0,
+        description="Bonus of +0.5 when agent corrects a hypo event within 10 steps, "
+                    "+0.3 for hyper recovery. Rewards active correction.",
+    )
     step_total: float = Field(
         description="Total reward for this step (sum of components)",
     )
@@ -104,7 +142,7 @@ class GlucoState(State):
       - step_count: int (>= 0)
     """
     task_id: int = Field(
-        description="Current task: 1, 2, or 3",
+        description="Current task: 1, 2, 3, or 4",
     )
     patient_name: str = Field(
         description="simglucose patient identifier",

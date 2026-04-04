@@ -52,3 +52,32 @@ DEFAULT_PATIENT = "adult#001"
 # Task 3 deterministic patient sample (fixed seed for reproducibility)
 # ---------------------------------------------------------------------------
 TASK3_EVAL_PATIENTS = random.Random(42).sample(ALL_PATIENT_NAMES, 5)
+
+# ---------------------------------------------------------------------------
+# Insulin-on-board (IOB) pharmacokinetics
+# Bilinear model: IOB peaks at ~60 min, clears by ~240 min
+# ---------------------------------------------------------------------------
+IOB_STEP_DECAY = 0.94            # Per-step (3 min) exponential decay factor
+
+# ---------------------------------------------------------------------------
+# Exercise event configuration
+# ---------------------------------------------------------------------------
+EXERCISE_INTENSITY_LEVELS = [0.3, 0.5, 0.7, 1.0]  # light to intense
+EXERCISE_DURATION_STEPS = [10, 20, 30]              # 30 min to 90 min
+EXERCISE_SENSITIVITY_MULTIPLIER = {  # Insulin sensitivity increase during exercise
+    0.3: 1.20,   # light exercise: 20% more sensitive
+    0.5: 1.35,   # moderate: 35%
+    0.7: 1.50,   # vigorous: 50%
+    1.0: 1.70,   # intense: 70%
+}
+# Exercise schedule for Task 2 (announced): step 150 = 7.5 hours in
+EXERCISE_SCHEDULE_TASK2 = {150: 0.5}    # {step: intensity}
+EXERCISE_ANNOUNCEMENT_STEPS = 10        # Announce 10 steps (30 min) in advance
+
+# ---------------------------------------------------------------------------
+# Task 4: Sick day / insulin resistance simulation
+# ---------------------------------------------------------------------------
+ILLNESS_RESISTANCE_MIN = 1.5    # Minimum insulin resistance multiplier
+ILLNESS_RESISTANCE_MAX = 2.5    # Maximum insulin resistance multiplier
+ILLNESS_ONSET_STEP_MIN = 20     # Earliest illness can start
+ILLNESS_ONSET_STEP_MAX = 100    # Latest illness can start

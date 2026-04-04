@@ -13,7 +13,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from models import GlucoState
-from server.graders import score_task_1, score_task_2, score_task_3, grade
+from server.graders import score_task_1, score_task_2, score_task_3, score_task_4, grade, grade_detailed
 
 
 def _make_state(
@@ -63,17 +63,24 @@ class TestGraderRange:
         assert isinstance(score, float)
         assert 0.0 <= score <= 1.0
 
+    def test_task_4_range(self):
+        state = _make_state([140.0] + [150.0] * 480, task_id=4)
+        score = score_task_4(state)
+        assert isinstance(score, float)
+        assert 0.0 <= score <= 1.0
+
     def test_empty_history(self):
         """Empty history (only initial reading) should return 0.0, not crash."""
         state = _make_state([140.0])
         assert score_task_1(state) == 0.0
         assert score_task_2(state) == 0.0
         assert score_task_3(state) == 0.0
+        assert score_task_4(state) == 0.0
 
     def test_grade_dispatch(self):
         """grade() dispatches correctly to per-task graders."""
         state = _make_state([140.0] + [150.0] * 480)
-        for task_id in [1, 2, 3]:
+        for task_id in [1, 2, 3, 4]:
             score = grade(task_id, state)
             assert 0.0 <= score <= 1.0
 
@@ -221,3 +228,147 @@ class TestTask3Scoring:
         state = _make_state(history, task_id=3, severe_hypo_events=20)
         score = score_task_3(state)
         assert score == 0.0
+
+
+# ── Detailed grader breakdown ────────────────────────────────────────
+
+
+class TestDetailedGrader:
+    """grade_detailed() returns full score decomposition."""
+
+    def test_returns_dict_with_required_keys(self):
+        history = [140.0] + [120.0] * 480
+        state = _make_state(history)
+        result = grade_detailed(1, state)
+        required_keys = [
+            "total", "tir_score", "tir_readings", "total_readings",
+            "hypo_penalty", "post_meal_penalties", "bonus",
+            "components", "clinical_summary",
+        ]
+        for key in required_keys:
+            assert key in result, f"Missing key: {key}"
+
+    def test_total_matches_grade(self):
+        """grade_detailed total should exactly match grade() output."""
+        history = [140.0] + [120.0] * 240 + [200.0] * 240
+        state = _make_state(history, severe_hypo_events=0)
+        for task_id in [1, 2, 3, 4]:
+            simple = grade(task_id, state)
+            detailed = grade_detailed(task_id, state)
+            assert abs(simple - detailed["total"]) < 1e-9, (
+                f"Task {task_id}: grade()={simple} != grade_detailed()={detailed['total']}"
+            )
+
+    def test_all_values_are_finite(self):
+        """All numeric values in the result should be finite floats or ints."""
+        import math
+        history = [140.0] + [150.0] * 480
+        state = _make_state(history)
+        for task_id in [1, 2, 3, 4]:
+            result = grade_detailed(task_id, state)
+            assert math.isfinite(result["total"])
+            assert math.isfinite(result["tir_score"])
+            assert isinstance(result["tir_readings"], int)
+            assert isinstance(result["total_readings"], int)
+            assert math.isfinite(result["hypo_penalty"])
+
+    def test_task_1_components(self):
+        """Task 1 detailed result should include no_hypo_bonus."""
+        history = [140.0] + [120.0] * 480
+        state = _make_state(history, severe_hypo_events=0)
+        result = grade_detailed(1, state)
+        assert result["bonus"] == 0.05
+        assert "no_hypo_bonus" in result["components"]
+        assert result["tir_score"] == 1.0
+
+    def test_task_2_post_meal_penalties(self):
+        """Task 2 detailed result should include per-meal spike info."""
+        history = [140.0] + [130.0] * 480
+        # Inject spike at meal step 100
+        for i in range(100, 160):
+            if i < len(history):
+                history[i] = 260.0
+        state = _make_state(history)
+        result = grade_detailed(2, state)
+        assert "step_100" in result["post_meal_penalties"]
+        meal_100 = result["post_meal_penalties"]["step_100"]
+        assert meal_100["penalty"] == 0.15  # peak > 250
+        assert meal_100["peak"] == 260.0
+
+    def test_task_3_detailed(self):
+        """Task 3 detailed result should include severe_hypo_penalty component."""
+        history = [140.0] + [120.0] * 480
+        state = _make_state(history, task_id=3, severe_hypo_events=2)
+        result = grade_detailed(3, state)
+        assert abs(result["hypo_penalty"] - 0.3) < 1e-9  # 2 * 0.15
+        assert "severe_hypo_penalty" in result["components"]
+
+    def test_empty_history(self):
+        """Empty history should return zeroed breakdown."""
+        state = _make_state([140.0])
+        result = grade_detailed(1, state)
+        assert result["total"] == 0.0
+        assert result["total_readings"] == 0
+
+    def test_invalid_task_raises(self):
+        """Invalid task_id should raise ValueError."""
+        state = _make_state([140.0] + [120.0] * 480)
+        try:
+            grade_detailed(99, state)
+            assert False, "Should have raised ValueError"
+        except ValueError:
+            pass
+
+
+# ── Task 4 scoring correctness ──────────────────────────────────────
+
+
+class TestTask4Scoring:
+    """Task 4 grader includes severe hyper penalty for illness-driven spikes."""
+
+    def test_perfect_control(self):
+        """All glucose in range should score high."""
+        history = [140.0] + [120.0] * 480
+        state = _make_state(history, task_id=4, severe_hypo_events=0)
+        score = score_task_4(state)
+        assert score == 1.0
+
+    def test_severe_hyper_penalty(self):
+        """Many steps above 300 mg/dL should reduce score significantly."""
+        # 200 steps at 310 (severe hyper) + 280 steps at 120 (in range)
+        history = [140.0] + [310.0] * 200 + [120.0] * 280
+        state = _make_state(history, task_id=4, severe_hypo_events=0, hyper_events=200)
+        score = score_task_4(state)
+        # TIR = 280/480 = 0.583, severe_hyper_penalty = min(0.4, 200/480*2) = 0.4
+        assert score < 0.3, f"Severe hyper should heavily penalise, got {score}"
+
+    def test_hypo_penalty(self):
+        """Severe hypo events should also penalise."""
+        history = [140.0] + [120.0] * 480
+        state = _make_state(history, task_id=4, severe_hypo_events=3)
+        score = score_task_4(state)
+        # TIR 1.0 - 3*0.15 = 0.55
+        assert abs(score - 0.55) < 0.01, f"Expected ~0.55, got {score}"
+
+    def test_combined_penalties(self):
+        """Both hypo and hyper penalties should stack."""
+        history = [140.0] + [310.0] * 100 + [120.0] * 380
+        state = _make_state(history, task_id=4, severe_hypo_events=2, hyper_events=100)
+        score = score_task_4(state)
+        assert score < 0.6, f"Combined penalties should reduce score, got {score}"
+
+    def test_floor_at_zero(self):
+        """Score should not go below 0.0."""
+        history = [140.0] + [310.0] * 480
+        state = _make_state(history, task_id=4, severe_hypo_events=10, hyper_events=480)
+        score = score_task_4(state)
+        assert score == 0.0
+
+    def test_detailed_has_severe_hyper(self):
+        """grade_detailed for Task 4 should include severe_hyper components."""
+        history = [140.0] + [310.0] * 100 + [120.0] * 380
+        state = _make_state(history, task_id=4)
+        result = grade_detailed(4, state)
+        assert "severe_hyper_penalty" in result["components"]
+        assert "severe_hyper_steps" in result["components"]
+        assert result["components"]["severe_hyper_steps"] == 100
