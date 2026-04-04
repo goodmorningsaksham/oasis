@@ -1,7 +1,7 @@
 """
-GlucoRL Environment Client.
+OASIS Environment Client.
 
-Provides a typed, synchronous client for interacting with the GlucoRL
+Provides a typed, synchronous client for interacting with the OASIS
 FastAPI server over WebSocket. Follows the OpenEnv EnvClient pattern
 used by the hackathon evaluator and inference scripts.
 
@@ -28,7 +28,7 @@ from models import GlucoAction, GlucoObservation, GlucoState, GlucoReward
 
 class GlucoEnv(EnvClient[GlucoAction, GlucoObservation, GlucoState]):
     """
-    Client for the GlucoRL Environment.
+    Client for the OASIS Environment.
 
     Maintains a persistent WebSocket connection to the server so that
     environment state is preserved across reset → step → step → state calls.

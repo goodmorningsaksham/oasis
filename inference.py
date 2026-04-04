@@ -1,14 +1,14 @@
 """
-GlucoRL Inference Script
+OASIS Inference Script
 ========================
-Runs a language model agent through all 3 GlucoRL tasks.
+Runs a language model agent through all OASIS tasks.
 
 Required environment variables:
-    API_BASE_URL   LLM API endpoint (e.g. https://router.huggingface.co/v1)
-    MODEL_NAME     Model identifier
-    HF_TOKEN       HuggingFace token used as API key
+    HF_TOKEN       HuggingFace token (NO default — must be set)
 
-Optional:
+Optional environment variables:
+    API_BASE_URL   LLM API endpoint (default: https://router.huggingface.co/v1)
+    MODEL_NAME     Model identifier (default: meta-llama/Llama-3.1-8B-Instruct)
     GLUCORL_ENV_URL  Environment server URL (default: http://localhost:8000)
 """
 
@@ -16,18 +16,30 @@ import os
 import json
 import re
 import time
+
 from openai import OpenAI
 from client import GlucoEnv
 from models import GlucoAction
 
+# ---------------------------------------------------------------------------
+# Environment variables — defaults per submission guide
+# ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME")
-MAX_STEPS = 480                  # full day
-INFERENCE_STEP_INTERVAL = 5      # agent acts every 5 steps, holds action between
+MODEL_NAME = os.getenv("MODEL_NAME") or "meta-llama/Llama-3.1-8B-Instruct"
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+BENCHMARK = "oasis"
+MAX_STEPS = 480
+INFERENCE_STEP_INTERVAL = 5
 TEMPERATURE = 0.1
 MAX_TOKENS = 100
 FALLBACK_ACTION = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
+
+TASK_NAMES = {
+    1: "basal_rate_control",
+    2: "meal_bolus_timing",
+    3: "cross_patient_generalisation",
+}
 
 SYSTEM_PROMPT = """You are an AI insulin dosing system for a Type 1 Diabetic patient.
 At each step you observe:
@@ -48,6 +60,31 @@ Rules:
 - Never give bolus when glucose is below 120 mg/dL
 Do not include any explanation. Respond with only the JSON."""
 
+
+# ---------------------------------------------------------------------------
+# Strict stdout logging — [START] / [STEP] / [END]
+# ---------------------------------------------------------------------------
+
+def log_start(task: str, env: str, model: str):
+    print(f"[START] task={task} env={env} model={model}")
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error=None):
+    print(
+        f"[STEP] step={step} action={action} "
+        f"reward={reward:.2f} done={str(done).lower()} "
+        f"error={error or 'null'}"
+    )
+
+
+def log_end(success: bool, steps: int, rewards: list):
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}")
+
+
+# ---------------------------------------------------------------------------
+# LLM interaction
+# ---------------------------------------------------------------------------
 
 def build_user_prompt(obs, step: int) -> str:
     """Format the current observation into a prompt for the LLM."""
@@ -82,29 +119,35 @@ def parse_action(response_text: str) -> GlucoAction:
     return FALLBACK_ACTION
 
 
-def run_task(client_openai: OpenAI, env_url: str, task_id: int) -> dict:
-    """
-    Run a single task episode and return summary metrics.
+def action_to_str(action: GlucoAction) -> str:
+    """Format action as a compact string for [STEP] logging."""
+    return f"basal={action.basal_rate:.2f}_bolus={action.bolus_dose:.2f}"
 
-    The agent queries the LLM every INFERENCE_STEP_INTERVAL steps and
-    holds the last action in between to stay within API rate limits
-    and finish under the 20-minute wall clock budget.
-    """
-    print(f"\n{'='*50}")
-    print(f"Running Task {task_id}...")
-    print(f"{'='*50}")
+
+# ---------------------------------------------------------------------------
+# Task runner
+# ---------------------------------------------------------------------------
+
+def run_task(client_openai: OpenAI, env_url: str, task_id: int):
+    """Run a single task episode with strict [START]/[STEP]/[END] logging."""
+    task_name = TASK_NAMES.get(task_id, f"task_{task_id}")
+
+    log_start(task_name, BENCHMARK, MODEL_NAME)
+
+    rewards = []
+    steps_completed = 0
+    action = FALLBACK_ACTION
+    llm_failed = False
 
     with GlucoEnv(base_url=env_url) as env:
         result = env.reset(task_id=task_id)
         obs = result.observation
-        total_reward = 0.0
-        steps_completed = 0
-        action = FALLBACK_ACTION
-        llm_failed = False  # After first failure, skip LLM to avoid timeout
 
-        for step in range(MAX_STEPS):
+        for step in range(1, MAX_STEPS + 1):
             if result.done:
                 break
+
+            error_msg = None
 
             # Agent decides every INFERENCE_STEP_INTERVAL steps
             if step % INFERENCE_STEP_INTERVAL == 0 and not llm_failed:
@@ -122,79 +165,45 @@ def run_task(client_openai: OpenAI, env_url: str, task_id: int) -> dict:
                     response_text = completion.choices[0].message.content or ""
                     action = parse_action(response_text)
                 except Exception as exc:
-                    print(f"  LLM call failed at step {step}: {exc}")
+                    error_msg = str(exc)[:100]
                     action = FALLBACK_ACTION
                     llm_failed = True
-                    print("  Switching to fallback actions for remaining steps")
 
             result = env.step(action)
             obs = result.observation
             step_reward = result.reward if result.reward is not None else 0.0
-            total_reward += step_reward
-            steps_completed += 1
+            rewards.append(step_reward)
+            steps_completed = step
 
-            # Print every ~4 simulated hours
-            if step % 48 == 0:
-                print(
-                    f"  Step {step:3d} | Glucose: {obs.glucose_mg_dl:6.1f} mg/dL "
-                    f"| Trend: {obs.glucose_trend:15s} "
-                    f"| Reward: {step_reward:+.2f}"
-                )
+            log_step(step, action_to_str(action), step_reward, result.done, error_msg)
 
-        state = env.state()
-        tir = state.tir_current
-        print(f"\nTask {task_id} complete:")
-        print(f"  Steps: {steps_completed}")
-        print(f"  TIR: {tir:.1%}")
-        print(f"  Total reward: {total_reward:.2f}")
-        print(f"  Hypo events: {state.hypo_events}")
-        print(f"  Severe hypo: {state.severe_hypo_events}")
+        # Determine success: positive total reward
+        success = sum(rewards) > 0
 
-        return {
-            "task_id": task_id,
-            "tir": tir,
-            "total_reward": total_reward,
-            "hypo_events": state.hypo_events,
-            "severe_hypo_events": state.severe_hypo_events,
-            "steps": steps_completed,
-        }
+    log_end(success, steps_completed, rewards)
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     env_url = os.getenv("GLUCORL_ENV_URL") or "http://localhost:8000"
-    print("GlucoRL Inference Script")
-    print(f"Model: {MODEL_NAME}")
-    print(f"Environment: {env_url}")
 
-    if not MODEL_NAME:
-        print("WARNING: MODEL_NAME not set — LLM calls will fail, using fallback actions")
-    if not API_KEY:
-        print("WARNING: HF_TOKEN / API_KEY not set — LLM calls will fail, using fallback actions")
-
-    client_openai = OpenAI(base_url=API_BASE_URL, api_key=API_KEY or "dummy", timeout=10.0)
-    results = []
-
-    start_time = time.time()
+    client_openai = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=HF_TOKEN or "dummy",
+        timeout=10.0,
+    )
 
     for task_id in [1, 2, 3]:
         try:
-            r = run_task(client_openai, env_url, task_id)
-            results.append(r)
+            run_task(client_openai, env_url, task_id)
         except Exception as e:
-            print(f"Task {task_id} failed: {e}")
-            results.append({"task_id": task_id, "tir": 0.0, "total_reward": -999})
-
-    elapsed = time.time() - start_time
-
-    print(f"\n{'='*50}")
-    print("FINAL BASELINE SCORES")
-    print(f"{'='*50}")
-    for r in results:
-        print(
-            f"Task {r['task_id']}: TIR={r.get('tir', 0):.1%} | "
-            f"Reward={r.get('total_reward', 0):.1f}"
-        )
-    print(f"\nTotal inference time: {elapsed:.1f}s")
+            # If entire task fails, still emit valid [START]/[END]
+            task_name = TASK_NAMES.get(task_id, f"task_{task_id}")
+            log_start(task_name, BENCHMARK, MODEL_NAME)
+            log_end(False, 0, [])
 
 
 if __name__ == "__main__":

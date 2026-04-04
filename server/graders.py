@@ -1,5 +1,5 @@
 """
-Task graders for the GlucoRL environment.
+Task graders for the OASIS environment.
 
 Each grader takes a completed episode state and returns a deterministic
 score in [0.0, 1.0]. The same glucose history always produces the same score.

@@ -1,8 +1,8 @@
 """
-GlucoRL Evaluation Script
+OASIS Evaluation Script
 =========================
 Runs the PID controller baseline and a constant-basal fallback agent through
-all 3 GlucoRL tasks, printing a comparison table suitable for the README.
+all OASIS tasks, printing a comparison table suitable for the README.
 
 Optionally connects to an LLM agent via the inference server if GLUCORL_ENV_URL
 is set (requires a running server and LLM credentials).
@@ -28,7 +28,7 @@ def run_episode(env: GlucoRLEnvironment, task_id: int, agent_fn, seed: int = 42)
     Run a single episode and return metrics.
 
     Args:
-        env: GlucoRL environment instance.
+        env: OASIS environment instance.
         task_id: Task to evaluate (1, 2, or 3).
         agent_fn: Callable(glucose: float, obs) -> GlucoAction.
         seed: Random seed for reproducibility.
@@ -67,7 +67,7 @@ def run_task3_full(env: GlucoRLEnvironment, agent_fn) -> dict:
     Run the full Task 3 evaluation: 5 episodes with fixed patient set.
 
     Args:
-        env: GlucoRL environment instance.
+        env: OASIS environment instance.
         agent_fn: Callable(glucose: float, obs) -> GlucoAction.
 
     Returns:
@@ -139,7 +139,7 @@ def print_separator():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GlucoRL Evaluation")
+    parser = argparse.ArgumentParser(description="OASIS Evaluation")
     parser.add_argument(
         "--with-server",
         action="store_true",
@@ -155,7 +155,7 @@ def main():
     }
 
     print()
-    print("GlucoRL Evaluation")
+    print("OASIS Evaluation")
     print("==================")
     print()
 

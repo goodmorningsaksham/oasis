@@ -1,5 +1,5 @@
 """
-Reward calculator for the GlucoRL environment.
+Reward calculator for the OASIS environment.
 
 Provides a shaped, per-step reward signal based on current glucose level.
 Rewards being in the 70-180 mg/dL target range, penalises hypoglycemia

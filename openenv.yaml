@@ -1,8 +1,8 @@
 spec_version: 1
-name: glucorl
-display_name: "GlucoRL — Insulin Dosing RL Environment"
+name: oasis
+display_name: "OASIS — Optimized Adaptive System for Insulin Scheduling"
 description: >
-  An OpenEnv environment for training RL agents to make personalized insulin
+  An OpenEnv reinforcement learning environment that trains AI agents to make personalized insulin
   dosing decisions for Type 1 Diabetic patients. Agents observe continuous
   glucose monitor readings and decide basal and bolus insulin delivery to
   maintain blood glucose in the safe 70-180 mg/dL range across 3 tasks

@@ -3,9 +3,9 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openenv-glucorl"
+name = "openenv-oasis"
 version = "0.1.0"
-description = "GlucoRL — Insulin Dosing RL Environment for OpenEnv"
+description = "OASIS — Optimized Adaptive System for Insulin Scheduling for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
     "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git@v0.2.1",
@@ -24,8 +24,8 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["glucorl", "glucorl.server"]
-package-dir = {"glucorl" = ".", "glucorl.server" = "server"}
+packages = ["oasis", "oasis.server"]
+package-dir = {"oasis" = ".", "oasis.server" = "server"}
 
 [project.scripts]
 server = "server.app:main"

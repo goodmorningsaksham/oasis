@@ -1,5 +1,5 @@
 """
-Shared constants for the GlucoRL environment.
+Shared constants for the OASIS environment.
 
 Central place for glucose thresholds, episode configuration, meal schedule,
 and patient identifiers. Imported by environment, reward_calculator, graders,
@@ -54,10 +54,12 @@ DEFAULT_PATIENT = "adult#001"
 TASK3_EVAL_PATIENTS = random.Random(42).sample(ALL_PATIENT_NAMES, 5)
 
 # ---------------------------------------------------------------------------
-# Insulin-on-board (IOB) pharmacokinetics
-# Bilinear model: IOB peaks at ~60 min, clears by ~240 min
+# Insulin-on-board (IOB) pharmacokinetics — gamma-CDF absorption model
+# Rapid-acting insulin (Lispro/Aspart): peaks ~55 min, clears over ~8 hours
 # ---------------------------------------------------------------------------
-IOB_STEP_DECAY = 0.94            # Per-step (3 min) exponential decay factor
+IOB_T_PEAK_MIN = 55             # Peak insulin activity at 55 minutes
+IOB_T_END_MIN = 480             # Track insulin for 8 hours (480 minutes)
+IOB_HISTORY_STEPS = 160         # 480 min / 3 min per step = 160 steps of history
 
 # ---------------------------------------------------------------------------
 # Exercise event configuration

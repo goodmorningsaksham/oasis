@@ -1,5 +1,5 @@
 """
-Data models for the GlucoRL Environment.
+Data models for the OASIS Environment.
 
 Defines Action, Observation, State for insulin dosing RL training.
 All models inherit from OpenEnv base types for spec compliance.
@@ -78,9 +78,10 @@ class GlucoObservation(Observation):
     )
     insulin_on_board_units: float = Field(
         default=0.0,
-        description="Active insulin remaining from recent boluses in units. "
-                    "Computed using exponential decay pharmacokinetic model. "
-                    "Commercial pumps display this to prevent bolus stacking.",
+        description="Active insulin remaining from recent doses in units. "
+                    "Computed using gamma-CDF pharmacokinetic model with "
+                    "peak activity at ~55 minutes (rapid-acting insulin profile). "
+                    "Accounts for both basal and bolus insulin delivery.",
     )
     exercise_intensity: float = Field(
         default=0.0,

@@ -379,7 +379,7 @@ class TestCGMNoise:
 
 
 class TestIOB:
-    """Insulin-on-Board tracking tests."""
+    """Insulin-on-Board tracking tests (gamma-CDF PK/PD model)."""
 
     def test_iob_starts_at_zero(self):
         """IOB should be 0.0 after reset."""
@@ -397,14 +397,14 @@ class TestIOB:
         )
 
     def test_iob_decays_without_bolus(self):
-        """IOB should decay over steps with no bolus."""
+        """IOB from a large bolus should decay over time."""
         env = GlucoRLEnvironment()
         env.reset(task_id=1, seed=42)
-        # Give a bolus
+        # Give a large bolus
         obs = env.step(GlucoAction(basal_rate=1.0, bolus_dose=10.0))
         iob_after_bolus = obs.insulin_on_board_units
-        # Step without bolus several times
-        for _ in range(20):
+        # Step without bolus — IOB should decrease as bolus is absorbed
+        for _ in range(30):
             obs = env.step(GlucoAction(basal_rate=1.0, bolus_dose=0.0))
         assert obs.insulin_on_board_units < iob_after_bolus, (
             f"IOB should decay: was {iob_after_bolus}, now {obs.insulin_on_board_units}"
@@ -427,6 +427,17 @@ class TestIOB:
         for _ in range(100):
             obs = env.step(action)
             assert obs.insulin_on_board_units >= 0.0
+
+    def test_iob_includes_basal(self):
+        """IOB should reflect basal insulin delivery, not just boluses."""
+        env = GlucoRLEnvironment()
+        env.reset(task_id=1, seed=42)
+        # Step with high basal, no bolus — IOB should still be > 0
+        for _ in range(10):
+            obs = env.step(GlucoAction(basal_rate=3.0, bolus_dose=0.0))
+        assert obs.insulin_on_board_units > 0.0, (
+            f"IOB should include basal insulin, got {obs.insulin_on_board_units}"
+        )
 
 
 # ── Exercise Events ──────────────────────────────────────────────────

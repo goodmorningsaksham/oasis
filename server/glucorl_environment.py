@@ -1,5 +1,5 @@
 """
-GlucoRL Environment Implementation.
+OASIS Environment Implementation.
 
 An OpenEnv environment for training RL agents to make personalised insulin
 dosing decisions for Type 1 Diabetic patients. Uses the simglucose simulator
@@ -13,6 +13,7 @@ Tasks:
 
 import logging
 import random
+from collections import deque
 from typing import Optional, Any
 from uuid import uuid4
 
@@ -33,7 +34,9 @@ from server.constants import (
     GLUCOSE_SEVERE_HYPO,
     GLUCOSE_TARGET_LOW,
     GLUCOSE_TARGET_HIGH,
-    IOB_STEP_DECAY,
+    IOB_T_PEAK_MIN,
+    IOB_T_END_MIN,
+    IOB_HISTORY_STEPS,
     EXERCISE_INTENSITY_LEVELS,
     EXERCISE_DURATION_STEPS,
     EXERCISE_SENSITIVITY_MULTIPLIER,
@@ -49,6 +52,25 @@ logger = logging.getLogger(__name__)
 
 # Maximum consecutive severe hypo steps before emergency termination
 MAX_CONSECUTIVE_SEVERE_HYPO = 5
+
+
+def _precompute_iob_curve() -> np.ndarray:
+    """Precompute the gamma-CDF insulin absorption curve at module load time.
+
+    Returns array of shape (IOB_HISTORY_STEPS,) where each value F_k[i]
+    is the cumulative fraction of insulin absorbed by time offset i.
+    IOB for a dose is then (1 - F_k[time_since_dose]) * dose.
+    """
+    from scipy.stats import gamma as gamma_dist
+    shape_k = 2
+    scale_theta = IOB_T_PEAK_MIN / (shape_k - 1)  # = 55 for rapid-acting
+    time_points = np.linspace(0, IOB_T_END_MIN, IOB_HISTORY_STEPS)
+    F_k = gamma_dist.cdf(time_points, a=shape_k, scale=scale_theta)
+    return F_k
+
+
+# Precomputed once at import — shape (160,)
+_IOB_ABSORPTION_CURVE = _precompute_iob_curve()
 
 
 class GlucoRLEnvironment(Environment):
@@ -84,7 +106,9 @@ class GlucoRLEnvironment(Environment):
         self._hypo_events: int = 0
         self._severe_hypo_events: int = 0
         self._hyper_events: int = 0
-        self._iob: float = 0.0  # Insulin-on-board in units
+        self._insulin_history: deque = deque(
+            [0.0] * IOB_HISTORY_STEPS, maxlen=IOB_HISTORY_STEPS
+        )
         self._current_exercise_intensity: float = 0.0
         self._exercise_steps_remaining: int = 0
         self._exercise_schedule: dict[int, float] = {}  # {step: intensity}
@@ -135,7 +159,9 @@ class GlucoRLEnvironment(Environment):
         self._hypo_events = 0
         self._severe_hypo_events = 0
         self._hyper_events = 0
-        self._iob = 0.0
+        self._insulin_history = deque(
+            [0.0] * IOB_HISTORY_STEPS, maxlen=IOB_HISTORY_STEPS
+        )
         self._current_exercise_intensity = 0.0
         self._exercise_steps_remaining = 0
         self._hypo_start_step = None
@@ -237,9 +263,10 @@ class GlucoRLEnvironment(Environment):
         bolus = action.bolus_dose
         self._action_history.append((basal, bolus))
 
-        # Update insulin-on-board: add new bolus, then decay
-        self._iob = (self._iob + bolus) * IOB_STEP_DECAY
-        self._iob = max(0.0, round(self._iob, 4))
+        # Track insulin delivered this step for PK/PD IOB model
+        # Basal: convert U/hr to U per 3-min step; Bolus: total units
+        insulin_this_step = (basal * STEP_DURATION_MIN / 60.0) + bolus
+        self._insulin_history.append(insulin_this_step)
 
         # Update exercise state
         if self._step_count in self._exercise_schedule:
@@ -437,7 +464,7 @@ class GlucoRLEnvironment(Environment):
             last_action_basal=round(last_basal, 4),
             last_action_bolus=round(last_bolus, 4),
             true_glucose_mg_dl=round(true_glucose, 2),
-            insulin_on_board_units=self._iob,
+            insulin_on_board_units=self._compute_iob(),
             exercise_intensity=self._current_exercise_intensity,
             exercise_announced=exercise_announced,
             glucose_history_window=window,
@@ -515,6 +542,24 @@ class GlucoRLEnvironment(Environment):
             if 0 < steps_until <= EXERCISE_ANNOUNCEMENT_STEPS:
                 return True
         return False
+
+    def _compute_iob(self) -> float:
+        """Compute insulin-on-board using PK/PD gamma-CDF absorption model.
+
+        IOB = sum of all past insulin doses, each weighted by the fraction
+        NOT YET absorbed at that time offset. A dose injected 5 minutes ago
+        has most of its insulin still "on board" (high weight). A dose
+        injected 4 hours ago has almost none remaining (low weight).
+
+        Returns:
+            Insulin-on-board in units, rounded to 4 decimal places.
+        """
+        # Reverse history so index 0 = most recent dose
+        history_reversed = np.array(list(self._insulin_history))[::-1]
+        # (1 - F_k) = fraction of insulin NOT YET absorbed at each offset
+        remaining_fraction = 1.0 - _IOB_ABSORPTION_CURVE
+        iob = float(np.sum(history_reversed * remaining_fraction))
+        return max(0.0, round(iob, 4))
 
     def _compute_tir(self) -> float:
         """

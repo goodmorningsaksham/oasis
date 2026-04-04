@@ -1,4 +1,4 @@
-# GlucoRL — Insulin Dosing RL Environment
+# OASIS — Optimized Adaptive System for Insulin Scheduling
 # Uses openenv-base for OpenEnv spec compliance (FastAPI, WebSocket, health checks)
 
 ARG BASE_IMAGE=ghcr.io/meta-pytorch/openenv-base:latest
@@ -20,9 +20,6 @@ COPY . /app/env
 
 # Set PYTHONPATH so imports resolve correctly
 ENV PYTHONPATH="/app/env:${PYTHONPATH}"
-
-# Enable OpenEnv web interface
-ENV ENABLE_WEB_INTERFACE=true
 
 # Health check — matches OpenEnv convention
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \

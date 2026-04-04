@@ -1,5 +1,5 @@
 """
-Patient manager for the GlucoRL environment.
+Patient manager for the OASIS environment.
 
 Wraps simglucose's T1DPatient with:
   - Unit conversion (U/hr -> U/min for basal, total units -> U/min for bolus)
