@@ -2,7 +2,8 @@
 Task graders for the OASIS environment.
 
 Each grader takes a completed episode state and returns a deterministic
-score in [0.0, 1.0]. The same glucose history always produces the same score.
+score in (0.0, 1.0) exclusive. The same glucose history always produces
+the same score.
 """
 
 import logging
@@ -21,6 +22,15 @@ from server.constants import (
 
 logger = logging.getLogger(__name__)
 
+# Epsilon ensures scores are strictly within (0, 1) — never exactly 0.0 or 1.0.
+# Required by the OpenEnv validator which checks: 0 < score < 1.
+_SCORE_EPS = 1e-9
+
+
+def _clamp(score: float) -> float:
+    """Clamp score to the open interval (_SCORE_EPS, 1 - _SCORE_EPS)."""
+    return max(_SCORE_EPS, min(1.0 - _SCORE_EPS, score))
+
 
 def score_task_1(state: GlucoState) -> float:
     """
@@ -33,11 +43,11 @@ def score_task_1(state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Score in [0.0, 1.0].
+        Score strictly in (0.0, 1.0).
     """
     glucose_history = state.glucose_history[1:]  # exclude initial reading
     if not glucose_history:
-        return 0.0
+        return _SCORE_EPS
 
     total = len(glucose_history)
     in_range = sum(
@@ -55,7 +65,7 @@ def score_task_1(state: GlucoState) -> float:
     # Penalty: subtract 0.1 for each severe hypo event
     score -= state.severe_hypo_events * 0.1
 
-    return max(0.0, min(1.0, score))
+    return _clamp(score)
 
 
 def score_task_2(state: GlucoState) -> float:
@@ -69,11 +79,11 @@ def score_task_2(state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Score in [0.0, 1.0].
+        Score strictly in (0.0, 1.0).
     """
     glucose_history = state.glucose_history[1:]  # exclude initial reading
     if not glucose_history:
-        return 0.0
+        return _SCORE_EPS
 
     total = len(glucose_history)
     in_range = sum(
@@ -109,7 +119,7 @@ def score_task_2(state: GlucoState) -> float:
     hypo_penalty = min(0.3, state.severe_hypo_events * 0.1)
 
     score = tir - post_meal_spike_penalty - hypo_penalty
-    return max(0.0, min(1.0, score))
+    return _clamp(score)
 
 
 def score_task_3_single(state: GlucoState) -> float:
@@ -120,11 +130,11 @@ def score_task_3_single(state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Per-episode score in [0.0, 1.0].
+        Per-episode score strictly in (0.0, 1.0).
     """
     glucose_history = state.glucose_history[1:]
     if not glucose_history:
-        return 0.0
+        return _SCORE_EPS
 
     total = len(glucose_history)
     in_range = sum(
@@ -134,7 +144,7 @@ def score_task_3_single(state: GlucoState) -> float:
     tir = in_range / total
 
     score = tir - (state.severe_hypo_events * 0.15)
-    return max(0.0, score)
+    return _clamp(score)
 
 
 def score_task_3(state: GlucoState) -> float:
@@ -151,7 +161,7 @@ def score_task_3(state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Score in [0.0, 1.0].
+        Score strictly in (0.0, 1.0).
     """
     return score_task_3_single(state)
 
@@ -170,11 +180,11 @@ def score_task_4(state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Score in [0.0, 1.0].
+        Score strictly in (0.0, 1.0).
     """
     glucose_history = state.glucose_history[1:]
     if not glucose_history:
-        return 0.0
+        return _SCORE_EPS
 
     total = len(glucose_history)
     in_range = sum(
@@ -188,7 +198,7 @@ def score_task_4(state: GlucoState) -> float:
     severe_hyper_penalty = min(0.4, severe_hyper_steps / total * 2)
 
     score = tir - (state.severe_hypo_events * 0.15) - severe_hyper_penalty
-    return max(0.0, min(1.0, score))
+    return _clamp(score)
 
 
 # Grader dispatch by task ID
@@ -209,7 +219,7 @@ def grade(task_id: int, state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Score in [0.0, 1.0].
+        Score strictly in (0.0, 1.0).
 
     Raises:
         ValueError: If task_id is not 1, 2, 3, or 4.
@@ -233,7 +243,7 @@ def grade_detailed(task_id: int, state: GlucoState) -> dict:
 
     Returns:
         Dict with keys:
-            total: float             — final clamped score [0.0, 1.0]
+            total: float             — final clamped score (0.0, 1.0) exclusive
             tir_score: float         — raw Time-in-Range fraction
             tir_readings: int        — number of steps in target range
             total_readings: int      — total steps scored
@@ -252,7 +262,7 @@ def grade_detailed(task_id: int, state: GlucoState) -> dict:
     glucose_history = state.glucose_history[1:]  # exclude initial reading
     if not glucose_history:
         return {
-            "total": 0.0,
+            "total": _SCORE_EPS,
             "tir_score": 0.0,
             "tir_readings": 0,
             "total_readings": 0,
@@ -284,7 +294,7 @@ def grade_detailed(task_id: int, state: GlucoState) -> dict:
         bonus = 0.05 if state.severe_hypo_events == 0 else 0.0
         severe_hypo_penalty = state.severe_hypo_events * 0.1
         raw = tir_score + bonus - severe_hypo_penalty
-        total = max(0.0, min(1.0, raw))
+        total = _clamp(raw)
         return {
             "total": total,
             "tir_score": tir_score,
@@ -336,7 +346,7 @@ def grade_detailed(task_id: int, state: GlucoState) -> dict:
 
         hypo_penalty = min(0.3, state.severe_hypo_events * 0.1)
         raw = tir_score - post_meal_total - hypo_penalty
-        total = max(0.0, min(1.0, raw))
+        total = _clamp(raw)
 
         return {
             "total": total,
@@ -357,7 +367,7 @@ def grade_detailed(task_id: int, state: GlucoState) -> dict:
     elif task_id == 3:
         hypo_penalty = state.severe_hypo_events * 0.15
         raw = tir_score - hypo_penalty
-        total = max(0.0, raw)
+        total = _clamp(raw)
 
         return {
             "total": total,
@@ -379,7 +389,7 @@ def grade_detailed(task_id: int, state: GlucoState) -> dict:
         severe_hyper_penalty = min(0.4, severe_hyper_steps / total_readings * 2)
         hypo_penalty = state.severe_hypo_events * 0.15
         raw = tir_score - hypo_penalty - severe_hyper_penalty
-        total = max(0.0, min(1.0, raw))
+        total = _clamp(raw)
 
         return {
             "total": total,
