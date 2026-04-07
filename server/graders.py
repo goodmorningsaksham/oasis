@@ -2,8 +2,7 @@
 Task graders for the OASIS environment.
 
 Each grader takes a completed episode state and returns a deterministic
-score in (0.0, 1.0) exclusive. The same glucose history always produces
-the same score.
+score in [0.0, 1.0]. The same glucose history always produces the same score.
 """
 
 import logging
@@ -22,14 +21,14 @@ from server.constants import (
 
 logger = logging.getLogger(__name__)
 
-# Epsilon ensures scores are strictly within (0, 1) — never exactly 0.0 or 1.0.
-# Required by the OpenEnv validator which checks: 0 < score < 1.
-_SCORE_EPS = 1e-9
+# Validator requires scores strictly in (0, 1) — not 0.0 or 1.0
+SCORE_MIN = 0.001
+SCORE_MAX = 0.999
 
 
 def _clamp(score: float) -> float:
-    """Clamp score to the open interval (_SCORE_EPS, 1 - _SCORE_EPS)."""
-    return max(_SCORE_EPS, min(1.0 - _SCORE_EPS, score))
+    """Clamp score to (0.001, 0.999) — strictly between 0 and 1."""
+    return max(SCORE_MIN, min(SCORE_MAX, score))
 
 
 def score_task_1(state: GlucoState) -> float:
@@ -43,11 +42,11 @@ def score_task_1(state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Score strictly in (0.0, 1.0).
+        Score in [0.0, 1.0].
     """
     glucose_history = state.glucose_history[1:]  # exclude initial reading
     if not glucose_history:
-        return _SCORE_EPS
+        return SCORE_MIN
 
     total = len(glucose_history)
     in_range = sum(
@@ -79,11 +78,11 @@ def score_task_2(state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Score strictly in (0.0, 1.0).
+        Score in [0.0, 1.0].
     """
     glucose_history = state.glucose_history[1:]  # exclude initial reading
     if not glucose_history:
-        return _SCORE_EPS
+        return SCORE_MIN
 
     total = len(glucose_history)
     in_range = sum(
@@ -130,11 +129,11 @@ def score_task_3_single(state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Per-episode score strictly in (0.0, 1.0).
+        Per-episode score in [0.0, 1.0].
     """
     glucose_history = state.glucose_history[1:]
     if not glucose_history:
-        return _SCORE_EPS
+        return SCORE_MIN
 
     total = len(glucose_history)
     in_range = sum(
@@ -161,7 +160,7 @@ def score_task_3(state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Score strictly in (0.0, 1.0).
+        Score in [0.0, 1.0].
     """
     return score_task_3_single(state)
 
@@ -180,11 +179,11 @@ def score_task_4(state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Score strictly in (0.0, 1.0).
+        Score in [0.0, 1.0].
     """
     glucose_history = state.glucose_history[1:]
     if not glucose_history:
-        return _SCORE_EPS
+        return SCORE_MIN
 
     total = len(glucose_history)
     in_range = sum(
@@ -219,7 +218,7 @@ def grade(task_id: int, state: GlucoState) -> float:
         state: Completed episode state.
 
     Returns:
-        Score strictly in (0.0, 1.0).
+        Score in [0.0, 1.0].
 
     Raises:
         ValueError: If task_id is not 1, 2, 3, or 4.
@@ -243,7 +242,7 @@ def grade_detailed(task_id: int, state: GlucoState) -> dict:
 
     Returns:
         Dict with keys:
-            total: float             — final clamped score (0.0, 1.0) exclusive
+            total: float             — final clamped score [0.0, 1.0]
             tir_score: float         — raw Time-in-Range fraction
             tir_readings: int        — number of steps in target range
             total_readings: int      — total steps scored
@@ -262,7 +261,7 @@ def grade_detailed(task_id: int, state: GlucoState) -> dict:
     glucose_history = state.glucose_history[1:]  # exclude initial reading
     if not glucose_history:
         return {
-            "total": _SCORE_EPS,
+            "total": SCORE_MIN,
             "tir_score": 0.0,
             "tir_readings": 0,
             "total_readings": 0,
