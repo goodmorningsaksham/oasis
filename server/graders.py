@@ -21,9 +21,9 @@ from server.constants import (
 
 logger = logging.getLogger(__name__)
 
-# Validator requires scores strictly in (0, 1) — not 0.0 or 1.0
-SCORE_MIN = 0.001
-SCORE_MAX = 0.999
+# Validator requires scores strictly in (0, 1) — must survive :.2f rounding
+SCORE_MIN = 0.01
+SCORE_MAX = 0.99
 
 
 def _clamp(score: float) -> float:

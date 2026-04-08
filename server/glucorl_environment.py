@@ -23,6 +23,7 @@ from openenv.core.env_server.interfaces import Environment
 from models import GlucoAction, GlucoObservation, GlucoState
 from server.patient_manager import PatientManager
 from server.reward_calculator import calculate_step_reward
+from server.reward_calculator import grade
 from server.constants import (
     STEPS_PER_EPISODE,
     STEP_DURATION_MIN,
@@ -377,6 +378,11 @@ class GlucoRLEnvironment(Environment):
             )
             self._done = True
 
+        if self._done:
+            final_score = grade(self._task_id, self.state)
+            return self._build_observation(
+                cgm_glucose, true_glucose, reward_value=final_score,
+            )
         return self._build_observation(
             cgm_glucose, true_glucose, reward_value=reward.step_total,
         )

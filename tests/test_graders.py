@@ -25,17 +25,17 @@ def _make_state(
 ) -> GlucoState:
     """Helper to build a GlucoState with a known glucose history."""
     return GlucoState(
-            task_id=task_id,
-            patient_name="adult#001",
-            step=len(glucose_history) - 1,
-            done=True,
-            glucose_history=glucose_history,
-            reward_history=[0.0] * (len(glucose_history) - 1),
-            tir_current=0.0,
-            hypo_events=hypo_events,
-            severe_hypo_events=severe_hypo_events,
-            hyper_events=hyper_events,
-            episode_reward_total=0.0,
+        task_id=task_id,
+        patient_name="adult#001",
+        step=len(glucose_history) - 1,
+        done=True,
+        glucose_history=glucose_history,
+        reward_history=[0.0] * (len(glucose_history) - 1),
+        tir_current=0.0,
+        hypo_events=hypo_events,
+        severe_hypo_events=severe_hypo_events,
+        hyper_events=hyper_events,
+        episode_reward_total=0.0,
     )
 
 
@@ -72,10 +72,10 @@ class TestGraderRange:
     def test_empty_history(self):
         """Empty history (only initial reading) should return SCORE_MIN, not crash."""
         state = _make_state([140.0])
-        assert score_task_1(state) == 0.001
-        assert score_task_2(state) == 0.001
-        assert score_task_3(state) == 0.001
-        assert score_task_4(state) == 0.001
+        assert score_task_1(state) == 0.01
+        assert score_task_2(state) == 0.01
+        assert score_task_3(state) == 0.01
+        assert score_task_4(state) == 0.01
 
     def test_grade_dispatch(self):
         """grade() dispatches correctly to per-task graders."""
@@ -137,7 +137,7 @@ class TestTask1Scoring:
         history = [140.0] + [140.0] * 480
         state = _make_state(history, severe_hypo_events=0)
         score = score_task_1(state)
-        assert score == 0.999
+        assert score == 0.99
 
     def test_severe_hypo_penalty(self):
         """10 severe hypo events should score < 0.2."""
@@ -151,7 +151,7 @@ class TestTask1Scoring:
         history = [60.0] + [50.0] * 480
         state = _make_state(history, severe_hypo_events=480)
         score = score_task_1(state)
-        assert score == 0.001
+        assert score == 0.01
 
     def test_half_in_range(self):
         """50% in range should give roughly 0.5 (plus/minus penalty)."""
@@ -213,7 +213,7 @@ class TestTask3Scoring:
         history = [140.0] + [120.0] * 480
         state = _make_state(history, task_id=3, severe_hypo_events=0)
         score = score_task_3(state)
-        assert score == 0.999
+        assert score == 0.99
 
     def test_severe_hypo_reduces_score(self):
         history = [140.0] + [120.0] * 480
@@ -227,7 +227,7 @@ class TestTask3Scoring:
         history = [140.0] + [120.0] * 480
         state = _make_state(history, task_id=3, severe_hypo_events=20)
         score = score_task_3(state)
-        assert score == 0.001
+        assert score == 0.01
 
 
 # ── Detailed grader breakdown ────────────────────────────────────────
@@ -307,7 +307,7 @@ class TestDetailedGrader:
         """Empty history should return SCORE_MIN breakdown."""
         state = _make_state([140.0])
         result = grade_detailed(1, state)
-        assert result["total"] == 0.001
+        assert result["total"] == 0.01
         assert result["total_readings"] == 0
 
     def test_invalid_task_raises(self):
@@ -331,7 +331,7 @@ class TestTask4Scoring:
         history = [140.0] + [120.0] * 480
         state = _make_state(history, task_id=4, severe_hypo_events=0)
         score = score_task_4(state)
-        assert score == 0.999
+        assert score == 0.99
 
     def test_severe_hyper_penalty(self):
         """Many steps above 300 mg/dL should reduce score significantly."""
@@ -362,7 +362,7 @@ class TestTask4Scoring:
         history = [140.0] + [310.0] * 480
         state = _make_state(history, task_id=4, severe_hypo_events=10, hyper_events=480)
         score = score_task_4(state)
-        assert score == 0.001
+        assert score == 0.01
 
     def test_detailed_has_severe_hyper(self):
         """grade_detailed for Task 4 should include severe_hyper components."""
