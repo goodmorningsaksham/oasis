@@ -214,18 +214,17 @@ def run_task(client_openai: OpenAI, env_url: str, task_id: int):
 
                 log_step(step, action_to_str(action), clamped, result.done, error_msg)
 
-            # Compute episode score: mean of normalized rewards, clamped to (0.01, 0.99)
-            if rewards:
-                score = sum(rewards) / len(rewards)
-                score = max(SCORE_MIN, min(SCORE_MAX, score))
-            else:
-                score = SCORE_MIN
-            success = score > 0.5
-
     except Exception as e:
-        # Connection failed — still emit valid [END]
-        success = False
+        # Connection failed or WebSocket close error — rewards may still be valid
+        pass
+
+    # Compute episode score AFTER try/except so WebSocket cleanup crash doesn't wipe it
+    if rewards:
+        score = sum(rewards) / len(rewards)
+        score = max(SCORE_MIN, min(SCORE_MAX, score))
+    else:
         score = SCORE_MIN
+    success = score > 0.5
 
     log_end(success, steps_completed, score, rewards)
 
