@@ -327,9 +327,38 @@ function ensureWs(){
 
 function wsSend(msg){
   return new Promise(async(resolve,reject)=>{
-    try{const s=await ensureWs();s.onmessage=e=>{resolve(JSON.parse(e.data))};s.send(JSON.stringify(msg))}
-    catch(e){reject(e)}
+    try{
+      const s=await ensureWs();
+      s.onmessage=e=>{
+        try{
+          const parsed=JSON.parse(e.data);
+          resolve(parsed);
+        }catch(pe){reject(pe)}
+      };
+      s.send(JSON.stringify(msg));
+    }catch(e){reject(e)}
   });
+}
+
+function getObs(r){
+  // Handle different response formats from OpenEnv
+  if(r&&r.data&&r.data.observation) return r.data.observation;
+  if(r&&r.observation) return r.observation;
+  if(r&&r.data&&r.data.glucose_mg_dl) return r.data;
+  if(r&&r.glucose_mg_dl) return r;
+  return null;
+}
+
+function getRew(r){
+  if(r&&r.data&&r.data.reward!==undefined) return r.data.reward;
+  if(r&&r.reward!==undefined) return r.reward;
+  return null;
+}
+
+function getDone(r){
+  if(r&&r.data&&r.data.done!==undefined) return r.data.done;
+  if(r&&r.done!==undefined) return r.done;
+  return false;
 }
 
 async function doReset(){
@@ -337,7 +366,9 @@ async function doReset(){
   const tid=parseInt(document.getElementById('taskSel').value);
   try{
     const r=await wsSend({type:'reset',data:{task_id:tid}});
-    const obs=r.data.observation;
+    addLog('Response: '+JSON.stringify(r).substring(0,200));
+    const obs=getObs(r);
+    if(!obs){addLog('Reset: no observation in response');return}
     glucHist=[obs.glucose_mg_dl];trueHist=[obs.true_glucose_mg_dl||obs.glucose_mg_dl];
     stepN=0;done=false;totalReward=0;
     updateChart();updateStats(obs,null);
@@ -352,8 +383,9 @@ async function doStep(){
   const bolus=parseFloat(document.getElementById('bolusSlider').value);
   try{
     const r=await wsSend({type:'step',data:{basal_rate:basal,bolus_dose:bolus}});
-    const obs=r.data.observation;const rew=r.data.reward;
-    stepN=obs.step;done=r.data.done;
+    const obs=getObs(r);const rew=getRew(r);
+    if(!obs){addLog('Step: no observation in response');return}
+    stepN=obs.step;done=getDone(r);
     glucHist.push(obs.glucose_mg_dl);trueHist.push(obs.true_glucose_mg_dl||obs.glucose_mg_dl);
     if(rew!==null)totalReward+=rew;
     updateChart();updateStats(obs,rew);
@@ -391,8 +423,9 @@ async function runStep(){
   document.getElementById('bolusSlider').value=a.bolus;document.getElementById('bolusVal').textContent=a.bolus.toFixed(1);
   try{
     const r=await wsSend({type:'step',data:{basal_rate:a.basal,bolus_dose:a.bolus}});
-    const obs=r.data.observation;const rew=r.data.reward;
-    stepN=obs.step;done=r.data.done;
+    const obs=getObs(r);const rew=getRew(r);
+    if(!obs){addLog('Agent step: no observation');stopRun();return}
+    stepN=obs.step;done=getDone(r);
     glucHist.push(obs.glucose_mg_dl);trueHist.push(obs.true_glucose_mg_dl||obs.glucose_mg_dl);
     if(rew!==null)totalReward+=rew;
     updateChart();updateStats(obs,rew);
@@ -405,7 +438,7 @@ async function runStep(){
 async function doGrade(){
   try{
     const r=await wsSend({type:'state'});
-    const s=r.data;
+    const s=r.data||r;
     if(!s.glucose_history||s.glucose_history.length<2){addLog('No episode data to grade.');return}
     // Fetch grade from HTTP endpoint for each task (uses state from WS session won't work, so compute client-side)
     const tir=s.tir_current;
