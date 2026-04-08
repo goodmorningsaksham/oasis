@@ -37,9 +37,11 @@ MAX_TOKENS = 100
 FALLBACK_ACTION = GlucoAction(basal_rate=1.0, bolus_dose=0.0)
 
 # Validator requires scores strictly in (0, 1) AND rewards are 2-decimal formatted
-# So clamp to (0.01, 0.99) which survives :.2f rounding
+# Normalize raw rewards (-6.0 to +1.5) into (0.01, 0.99) to preserve signal
 SCORE_MIN = 0.01
 SCORE_MAX = 0.99
+RAW_REWARD_MIN = -6.0   # worst: severe hypo (-3.0) + overdose (-3.0)
+RAW_REWARD_MAX = 1.5    # best: in-range (+1.0) + recovery bonus (+0.5)
 
 TASK_NAMES = {
     1: "basal_rate_control",
@@ -68,12 +70,26 @@ Do not include any explanation. Respond with only the JSON."""
 
 
 # ---------------------------------------------------------------------------
-# Reward clamping — validator requires strictly (0, 1)
+# Reward normalization — validator requires strictly (0, 1)
 # ---------------------------------------------------------------------------
 
-def clamp_reward(reward: float) -> float:
-    """Clamp reward to (0.001, 0.999) for validator compliance."""
-    return max(SCORE_MIN, min(SCORE_MAX, reward))
+def normalize_reward(reward: float) -> float:
+    """Normalize raw step reward into (0.01, 0.99) range.
+
+    Maps the full reward range linearly so the validator sees values
+    strictly between 0 and 1, while preserving relative ordering.
+
+    Examples:
+        +1.00 (in range)     → 0.92
+        +1.50 (in range+recovery) → 0.99
+        -0.50 (mild hyper)   → 0.73
+        -1.00 (mild hypo)    → 0.66
+        -1.50 (severe hyper) → 0.60
+        -3.00 (severe hypo)  → 0.40
+        -6.00 (hypo+overdose)→ 0.01
+    """
+    normalized = SCORE_MIN + (reward - RAW_REWARD_MIN) / (RAW_REWARD_MAX - RAW_REWARD_MIN) * (SCORE_MAX - SCORE_MIN)
+    return max(SCORE_MIN, min(SCORE_MAX, round(normalized, 4)))
 
 
 # ---------------------------------------------------------------------------
@@ -81,20 +97,22 @@ def clamp_reward(reward: float) -> float:
 # ---------------------------------------------------------------------------
 
 def log_start(task: str, env: str, model: str):
-    print(f"[START] task={task} env={env} model={model}")
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
 def log_step(step: int, action: str, reward: float, done: bool, error=None):
+    error_val = error if error else "null"
     print(
         f"[STEP] step={step} action={action} "
         f"reward={reward:.2f} done={str(done).lower()} "
-        f"error={error or 'null'}"
+        f"error={error_val}",
+        flush=True,
     )
 
 
-def log_end(success: bool, steps: int, rewards: list):
+def log_end(success: bool, steps: int, score: float, rewards: list):
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}")
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -189,21 +207,27 @@ def run_task(client_openai: OpenAI, env_url: str, task_id: int):
                 obs = result.observation
                 step_reward = result.reward if result.reward is not None else 0.0
 
-                # Clamp reward to (0.001, 0.999) for validator
-                clamped = clamp_reward(step_reward)
+                # Normalize reward to (0.01, 0.99) for validator
+                clamped = normalize_reward(step_reward)
                 rewards.append(clamped)
                 steps_completed = step
 
                 log_step(step, action_to_str(action), clamped, result.done, error_msg)
 
-            # Determine success: positive total reward
-            success = sum(rewards) > 0
+            # Compute episode score: mean of normalized rewards, clamped to (0.01, 0.99)
+            if rewards:
+                score = sum(rewards) / len(rewards)
+                score = max(SCORE_MIN, min(SCORE_MAX, score))
+            else:
+                score = SCORE_MIN
+            success = score > 0.5
 
     except Exception as e:
         # Connection failed — still emit valid [END]
         success = False
+        score = SCORE_MIN
 
-    log_end(success, steps_completed, rewards)
+    log_end(success, steps_completed, score, rewards)
 
 
 # ---------------------------------------------------------------------------
